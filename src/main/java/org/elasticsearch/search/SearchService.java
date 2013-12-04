@@ -496,6 +496,18 @@ public class SearchService extends AbstractLifecycleComponent<SearchService> {
             if (context.size() == -1) {
                 context.size(10);
             }
+            
+            if(context.groupBy()!=null)
+            {
+                if(context.groupSize() == -1)
+                {
+                    context.groupSize(1);
+                }
+                if(context.groupFrom() == -1)
+                {
+                    context.groupFrom(0);
+                }
+            }
 
             // pre process
             dfsPhase.preProcess(context);

@@ -20,6 +20,7 @@
 package org.elasticsearch.action.search.type;
 
 import org.apache.lucene.search.ScoreDoc;
+import org.apache.lucene.search.grouping.SearchGroup;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.NoShardAvailableActionException;
 import org.elasticsearch.action.search.*;
@@ -94,6 +95,7 @@ public abstract class TransportSearchTypeAction extends TransportAction<SearchRe
         private volatile AtomicArray<ShardSearchFailure> shardFailures;
         private final Object shardFailuresMutex = new Object();
         protected volatile ScoreDoc[] sortedShardList;
+        protected SearchGroup[] topGroups;
 
         protected final long startTime = System.currentTimeMillis();
 
@@ -213,7 +215,7 @@ public abstract class TransportSearchTypeAction extends TransportAction<SearchRe
                     onFirstPhaseResult(shardIndex, shard, null, shardIt, new NoShardAvailableActionException(shardIt.shardId()));
                 } else {
                     String[] filteringAliases = clusterState.metaData().filteringAliases(shard.index(), request.indices());
-                    sendExecuteFirstPhase(node, internalSearchRequest(shard, shardsIts.size(), request, filteringAliases, startTime), new SearchServiceListener<FirstResult>() {
+                    sendExecuteFirstPhase(node, internalSearchRequest(shard, shardsIts.size(), request, filteringAliases, startTime, topGroups), new SearchServiceListener<FirstResult>() {
                         @Override
                         public void onResult(FirstResult result) {
                             onFirstPhaseResult(shardIndex, shard, result, shardIt);

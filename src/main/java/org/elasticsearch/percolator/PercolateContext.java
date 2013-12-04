@@ -653,4 +653,43 @@ public class PercolateContext extends SearchContext {
     public MapperService.SmartNameObjectMapper smartNameObjectMapper(String name) {
         throw new UnsupportedOperationException();
     }
+
+    @Override
+    public int groupSize() {
+        return 0;
+    }
+
+    @Override
+    public SearchContext groupSize(int groupSize) {
+        return null;
+    }
+
+    @Override
+    public String groupBy() {
+        return null;
+    }
+
+    @Override
+    public void groupBy(String groupBy) {
+    }
+
+    @Override
+    public SearchContext groupSort(Sort groupSort) {
+        return null;
+    }
+
+    @Override
+    public Sort groupSort() {
+        return null;
+    }
+
+    @Override
+    public int groupFrom() {
+        return 0;
+    }
+
+    @Override
+    public SearchContext groupFrom(int groupFrom) {
+        return null;
+    }
 }

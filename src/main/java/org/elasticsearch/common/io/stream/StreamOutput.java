@@ -408,6 +408,9 @@ public abstract class StreamOutput extends OutputStream {
         } else if (type == Short.class) {
             writeByte((byte) 16);
             writeShort((Short) value);
+        } else if(type==BytesRef.class) {
+            writeByte((byte)17);
+            writeBytesRef((BytesRef)value);
         } else {
             throw new IOException("Can't write type [" + type + "]");
         }

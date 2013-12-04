@@ -120,12 +120,20 @@ public class DefaultSearchContext extends SearchContext {
     private ScriptFieldsContext scriptFields;
     private PartialFieldsContext partialFields;
     private FetchSourceContext fetchSourceContext;
+    
+    private String groupBy;
 
     private int from = -1;
 
     private int size = -1;
+    
+    private int groupSize=1;
+    
+    private int groupFrom=0;
 
     private Sort sort;
+    
+    private Sort groupSort;
 
     private Float minimumScore;
 
@@ -442,6 +450,15 @@ public class DefaultSearchContext extends SearchContext {
     public Sort sort() {
         return this.sort;
     }
+    
+    public SearchContext groupSort(Sort groupSort) {
+        this.groupSort = groupSort;
+        return this;
+    }
+
+    public Sort groupSort() {
+        return this.groupSort;
+    }
 
     public SearchContext trackScores(boolean trackScores) {
         this.trackScores = trackScores;
@@ -507,7 +524,7 @@ public class DefaultSearchContext extends SearchContext {
         this.from = from;
         return this;
     }
-
+    
     public int size() {
         return size;
     }
@@ -516,7 +533,25 @@ public class DefaultSearchContext extends SearchContext {
         this.size = size;
         return this;
     }
+    
+    public int groupSize() {
+        return groupSize;
+    }
 
+    public SearchContext groupSize(int groupSize) {
+        this.groupSize = groupSize;
+        return this;
+    }
+    
+    public int groupFrom() {
+        return groupFrom;
+    }
+
+    public SearchContext groupFrom(int groupFrom) {
+        this.groupFrom = groupFrom;
+        return this;
+    }
+    
     public boolean hasFieldNames() {
         return fieldNames != null;
     }
@@ -530,6 +565,14 @@ public class DefaultSearchContext extends SearchContext {
 
     public void emptyFieldNames() {
         this.fieldNames = ImmutableList.of();
+    }
+    
+    public String groupBy() {
+        return groupBy;
+    }
+
+    public void groupBy(String groupBy) {
+        this.groupBy=groupBy;
     }
 
     public boolean explain() {

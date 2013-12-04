@@ -21,6 +21,7 @@ package org.elasticsearch.action.search.type;
 
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Maps;
+import org.apache.lucene.search.grouping.SearchGroup;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.CharsRef;
 import org.apache.lucene.util.UnicodeUtil;
@@ -47,10 +48,11 @@ import java.util.Map;
  */
 public abstract class TransportSearchHelper {
 
-    public static ShardSearchRequest internalSearchRequest(ShardRouting shardRouting, int numberOfShards, SearchRequest request, String[] filteringAliases, long nowInMillis) {
+    public static ShardSearchRequest internalSearchRequest(ShardRouting shardRouting, int numberOfShards, SearchRequest request, String[] filteringAliases, long nowInMillis, SearchGroup[] topGroups) {
         ShardSearchRequest shardRequest = new ShardSearchRequest(request, shardRouting, numberOfShards);
         shardRequest.filteringAliases(filteringAliases);
         shardRequest.nowInMillis(nowInMillis);
+        shardRequest.topGroups(topGroups);
         return shardRequest;
     }
 

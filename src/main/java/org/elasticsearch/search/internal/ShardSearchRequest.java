@@ -19,6 +19,7 @@
 
 package org.elasticsearch.search.internal;
 
+import org.apache.lucene.search.grouping.SearchGroup;
 import org.elasticsearch.action.search.SearchRequest;
 import org.elasticsearch.action.search.SearchType;
 import org.elasticsearch.cluster.routing.ShardRouting;
@@ -26,6 +27,7 @@ import org.elasticsearch.common.Strings;
 import org.elasticsearch.common.bytes.BytesReference;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
+import org.elasticsearch.common.lucene.Lucene;
 import org.elasticsearch.search.Scroll;
 import org.elasticsearch.transport.TransportRequest;
 
@@ -65,6 +67,8 @@ public class ShardSearchRequest extends TransportRequest {
     private String[] types = Strings.EMPTY_ARRAY;
 
     private String[] filteringAliases;
+    
+    private SearchGroup[] topGroups;
 
     private BytesReference source;
     private BytesReference extraSource;
@@ -158,6 +162,16 @@ public class ShardSearchRequest extends TransportRequest {
         this.filteringAliases = filteringAliases;
         return this;
     }
+    
+    public SearchGroup[] topGroups()
+    {
+        return topGroups;
+    }
+    
+    public void topGroups(SearchGroup[] topGroups)
+    {
+        this.topGroups=topGroups;
+    }
 
     public String[] types() {
         return types;
@@ -184,6 +198,19 @@ public class ShardSearchRequest extends TransportRequest {
 
         types = in.readStringArray();
         filteringAliases = in.readStringArray();
+        if(in.readBoolean())
+        {
+            topGroups=new SearchGroup[in.readVInt()];
+            for(int ii=0;ii<topGroups.length;ii++)
+            {
+                topGroups[ii]=new SearchGroup();
+                if(in.readBoolean())
+                {
+                    topGroups[ii].groupValue=in.readGenericValue();
+                }
+                topGroups[ii].sortValues=Lucene.readValues(in);
+            }
+        }
         nowInMillis = in.readVLong();
     }
 
@@ -204,6 +231,28 @@ public class ShardSearchRequest extends TransportRequest {
         out.writeBytesReference(extraSource);
         out.writeStringArray(types);
         out.writeStringArrayNullable(filteringAliases);
+        if(topGroups==null)
+        {
+            out.writeBoolean(false);
+        }
+        else
+        {
+            out.writeBoolean(true);
+            out.writeVInt(topGroups.length);
+            for(SearchGroup group: topGroups)
+            {
+                if(group.groupValue==null)
+                {
+                    out.writeBoolean(false);
+                }
+                else
+                {
+                    out.writeBoolean(true);
+                    out.writeGenericValue(group.groupValue);
+                    Lucene.writeValues(out, group.sortValues);
+                }
+            }
+        }
         out.writeVLong(nowInMillis);
     }
 }

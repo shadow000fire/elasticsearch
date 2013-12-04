@@ -20,6 +20,7 @@
 package org.elasticsearch.search.query;
 
 import org.apache.lucene.search.TopDocs;
+import org.apache.lucene.search.grouping.TopGroups;
 import org.elasticsearch.common.io.stream.StreamInput;
 import org.elasticsearch.common.io.stream.StreamOutput;
 import org.elasticsearch.search.SearchShardTarget;
@@ -30,8 +31,7 @@ import org.elasticsearch.transport.TransportResponse;
 
 import java.io.IOException;
 
-import static org.elasticsearch.common.lucene.Lucene.readTopDocs;
-import static org.elasticsearch.common.lucene.Lucene.writeTopDocs;
+import static org.elasticsearch.common.lucene.Lucene.*;
 
 /**
  *
@@ -42,7 +42,11 @@ public class QuerySearchResult extends TransportResponse implements QuerySearchR
     private SearchShardTarget shardTarget;
     private int from;
     private int size;
+    private int groupSize;
+    private int groupFrom;
     private TopDocs topDocs;
+    private TopGroups topGroups;
+    private boolean groupsPhase=true;//false is hits phase
     private InternalFacets facets;
     private Suggest suggest;
     private boolean searchTimedOut;
@@ -94,6 +98,24 @@ public class QuerySearchResult extends TransportResponse implements QuerySearchR
     public void topDocs(TopDocs topDocs) {
         this.topDocs = topDocs;
     }
+    
+    public TopGroups topGroups() {
+        return topGroups;
+    }
+
+    public void topGroups(TopGroups topGroups) {
+        this.topGroups = topGroups;
+    }
+    
+    public boolean groupsPhase()
+    {
+        return groupsPhase;
+    }
+    
+    public void groupsPhase(boolean groupsPhase)
+    {
+        this.groupsPhase=groupsPhase;
+    }
 
     public Facets facets() {
         return facets;
@@ -128,6 +150,24 @@ public class QuerySearchResult extends TransportResponse implements QuerySearchR
         this.size = size;
         return this;
     }
+    
+    public int groupSize() {
+        return groupSize;
+    }
+
+    public QuerySearchResult groupSize(int groupSize) {
+        this.groupSize = groupSize;
+        return this;
+    }
+    
+    public int groupFrom() {
+        return groupFrom;
+    }
+
+    public QuerySearchResult groupFrom(int groupFrom) {
+        this.groupFrom = groupFrom;
+        return this;
+    }
 
     public static QuerySearchResult readQuerySearchResult(StreamInput in) throws IOException {
         QuerySearchResult result = new QuerySearchResult();
@@ -142,7 +182,11 @@ public class QuerySearchResult extends TransportResponse implements QuerySearchR
 //        shardTarget = readSearchShardTarget(in);
         from = in.readVInt();
         size = in.readVInt();
+        groupSize=in.readVInt();
+        groupFrom=in.readVInt();
         topDocs = readTopDocs(in);
+        topGroups=readTopGroups(in);
+        groupsPhase=in.readBoolean();
         if (in.readBoolean()) {
             facets = InternalFacets.readFacets(in);
         }
@@ -159,7 +203,11 @@ public class QuerySearchResult extends TransportResponse implements QuerySearchR
 //        shardTarget.writeTo(out);
         out.writeVInt(from);
         out.writeVInt(size);
+        out.writeVInt(groupSize);
+        out.writeVInt(groupFrom);
         writeTopDocs(out, topDocs, 0);
+        writeTopGroups(out,topGroups,0,0);
+        out.writeBoolean(groupsPhase);
         if (facets == null) {
             out.writeBoolean(false);
         } else {

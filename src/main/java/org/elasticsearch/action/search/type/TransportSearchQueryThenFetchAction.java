@@ -19,6 +19,9 @@
 
 package org.elasticsearch.action.search.type;
 
+import org.apache.lucene.search.ScoreDoc;
+import org.apache.lucene.search.grouping.GroupDocs;
+import org.apache.lucene.search.grouping.SearchGroup;
 import org.elasticsearch.action.ActionListener;
 import org.elasticsearch.action.search.ReduceSearchPhaseException;
 import org.elasticsearch.action.search.SearchOperationThreading;
@@ -39,8 +42,12 @@ import org.elasticsearch.search.fetch.FetchSearchResult;
 import org.elasticsearch.search.internal.InternalSearchResponse;
 import org.elasticsearch.search.internal.ShardSearchRequest;
 import org.elasticsearch.search.query.QuerySearchResult;
+import org.elasticsearch.search.query.QuerySearchResultProvider;
 import org.elasticsearch.threadpool.ThreadPool;
 
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -82,7 +89,52 @@ public class TransportSearchQueryThenFetchAction extends TransportSearchTypeActi
 
         @Override
         protected void moveToSecondPhase() {
-            sortedShardList = searchPhaseController.sortDocs(firstResults);
+            List<? extends AtomicArray.Entry<? extends QuerySearchResultProvider>> results=firstResults.asList();
+            
+            if(results.get(0).value.queryResult().topGroups()!=null) // means we got back groups from the query
+            {
+                try
+                {
+                    if(results.get(0).value.queryResult().groupsPhase())
+                    {
+                        logger.info("Coordinator - Merging Groups Phase");
+                        //merge top groups, reset request object, call start
+                        GroupDocs[] groupDocs = searchPhaseController.sortGroupedDocs(results, results.get(0).value.queryResult().size(), 1, 
+                                results.get(0).value.queryResult().from(),false);
+                        if(groupDocs.length==0)
+                        {
+                            sortedShardList=SearchPhaseController.EMPTY_DOCS;
+                            prepareFetch();
+                        }
+                        else
+                        {
+                            SearchGroup[] topGroups=new SearchGroup[groupDocs.length];
+                            for(int ii=0;ii<groupDocs.length;ii++)
+                            {
+                                topGroups[ii]=new SearchGroup();
+                                topGroups[ii].groupValue=groupDocs[ii].groupValue;
+                                topGroups[ii].sortValues=groupDocs[ii].groupSortValues;
+                                logger.info("Top Group: value={}, score={}, hits={}",  topGroups[ii].groupValue, groupDocs[ii].maxScore,groupDocs[ii].totalHits);
+                            }
+                            
+                            new GroupAsyncAction(request,listener, topGroups).start();
+                        }
+                    }
+                }catch(IOException e)
+                {
+                    logger.error("Exception encountered while processing group query", e);
+                    results.clear();
+                }
+            }
+            else
+            {
+                sortedShardList = searchPhaseController.sortDocs(results);
+                prepareFetch();
+            }
+        }
+        
+        protected void prepareFetch()
+        {
             searchPhaseController.fillDocIdsToLoad(docIdsToLoad, sortedShardList);
 
             if (docIdsToLoad.asList().isEmpty()) {
@@ -196,6 +248,42 @@ public class TransportSearchQueryThenFetchAction extends TransportSearchTypeActi
                 scrollId = TransportSearchHelper.buildScrollId(request.searchType(), firstResults, null);
             }
             listener.onResponse(new SearchResponse(internalResponse, scrollId, expectedSuccessfulOps, successulOps.get(), buildTookInMillis(), buildShardFailures()));
+        }
+    }
+    
+    private class GroupAsyncAction extends AsyncAction {
+
+        private GroupAsyncAction(SearchRequest request, ActionListener<SearchResponse> listener, SearchGroup[] topGroups) {
+            super(request, listener);
+            this.topGroups=topGroups;
+        }
+
+        @Override
+        protected void moveToSecondPhase() {
+            List<? extends AtomicArray.Entry<? extends QuerySearchResultProvider>> results=firstResults.asList();
+            
+            try
+            {
+                logger.info("Coordinator - Merging Hits Phase");
+                
+                //merge groups of hits and call fetch
+                GroupDocs[]  groupDocs = searchPhaseController.sortGroupedDocs(results, results.get(0).value.queryResult().size(), 
+                        results.get(0).value.queryResult().groupSize(),results.get(0).value.queryResult().from(),true);
+                ArrayList<ScoreDoc> docList=new ArrayList<ScoreDoc>(groupDocs.length*results.get(0).value.queryResult().groupSize());
+                for(GroupDocs group:groupDocs)
+                {
+                    for(ScoreDoc doc:group.scoreDocs)
+                    {
+                        docList.add(doc);
+                    }
+                }
+                sortedShardList=docList.toArray(new ScoreDoc[docList.size()]);
+                prepareFetch();
+            }catch(IOException e)
+            {
+                logger.error("Exception encountered while processing group query", e);
+                results.clear();
+            }
         }
     }
 }

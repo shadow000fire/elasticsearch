@@ -84,12 +84,20 @@ public class SearchSourceBuilder implements ToXContent {
     private int from = -1;
 
     private int size = -1;
+    
+    private int groupSize=-1;
+    
+    private int groupFrom=-1;
+    
+    private String groupBy;
 
     private Boolean explain;
 
     private Boolean version;
 
     private List<SortBuilder> sorts;
+    
+    private List<SortBuilder> groupSorts;
 
     private boolean trackScores = false;
 
@@ -259,6 +267,30 @@ public class SearchSourceBuilder implements ToXContent {
         this.size = size;
         return this;
     }
+    
+    /**
+     * The number of search hits within each group to return. Defaults to <tt>10</tt>.
+     */
+    public SearchSourceBuilder groupSize(int groupSize) {
+        this.groupSize = groupSize;
+        return this;
+    }
+    
+    /**
+     * From index to start the search from inside a group. Defaults to <tt>0</tt>.
+     */
+    public SearchSourceBuilder groupFrom(int groupFrom) {
+        this.groupFrom = groupFrom;
+        return this;
+    }
+    
+    /**
+     * Specifies the field to use in grouping results.  If none is specified the results are not grouped.
+     */
+    public SearchSourceBuilder groupBy(String groupBy) {
+        this.groupBy = groupBy;
+        return this;
+    }
 
     /**
      * Sets the minimum score below which docs will be filtered out.
@@ -329,6 +361,36 @@ public class SearchSourceBuilder implements ToXContent {
             sorts = Lists.newArrayList();
         }
         sorts.add(sort);
+        return this;
+    }
+    
+    /**
+     * Adds a sort against the given field name and the sort ordering.
+     *
+     * @param name  The name of the field
+     * @param order The sort ordering
+     */
+    public SearchSourceBuilder groupSort(String name, SortOrder order) {
+        return groupSort(SortBuilders.fieldSort(name).order(order));
+    }
+
+    /**
+     * Add a sort against the given field name.
+     *
+     * @param name The name of the field to sort by
+     */
+    public SearchSourceBuilder groupSort(String name) {
+        return groupSort(SortBuilders.fieldSort(name));
+    }
+
+    /**
+     * Adds a sort builder.
+     */
+    public SearchSourceBuilder groupSort(SortBuilder groupSort) {
+        if (groupSorts == null) {
+            groupSorts = Lists.newArrayList();
+        }
+        groupSorts.add(groupSort);
         return this;
     }
 
@@ -640,6 +702,16 @@ public class SearchSourceBuilder implements ToXContent {
         if (size != -1) {
             builder.field("size", size);
         }
+        if (groupSize != -1) {
+            builder.field("group_size", groupSize);
+        }
+        if (groupFrom != -1) {
+            builder.field("group_from", groupFrom);
+        }
+        
+        if (groupBy != null) {
+            builder.field("group_by", groupBy);
+        }
 
         if (timeoutInMillis != -1) {
             builder.field("timeout", timeoutInMillis);
@@ -749,6 +821,19 @@ public class SearchSourceBuilder implements ToXContent {
         if (sorts != null) {
             builder.startArray("sort");
             for (SortBuilder sort : sorts) {
+                builder.startObject();
+                sort.toXContent(builder, params);
+                builder.endObject();
+            }
+            builder.endArray();
+            if (trackScores) {
+                builder.field("track_scores", trackScores);
+            }
+        }
+        
+        if (groupSorts != null) {
+            builder.startArray("group_sort");
+            for (SortBuilder sort : groupSorts) {
                 builder.startObject();
                 sort.toXContent(builder, params);
                 builder.endObject();

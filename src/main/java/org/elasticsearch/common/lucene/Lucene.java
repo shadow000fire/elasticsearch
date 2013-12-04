@@ -26,6 +26,8 @@ import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.SegmentInfos;
 import org.apache.lucene.search.*;
+import org.apache.lucene.search.grouping.GroupDocs;
+import org.apache.lucene.search.grouping.TopGroups;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.util.BytesRef;
 import org.apache.lucene.util.Version;
@@ -99,6 +101,8 @@ public class Lucene {
         logger.warn("no version match {}, default to {}", version, defaultVersion);
         return defaultVersion;
     }
+    
+    
 
     /**
      * Reads the segments infos, failing if it fails to load
@@ -133,6 +137,81 @@ public class Lucene {
             return false;
         }
     }
+    
+    public static ScoreDoc[] readScoreDocs(StreamInput in, boolean check4Fields) throws IOException
+    {
+        if(check4Fields)
+        {
+            if(in.readBoolean())
+            {
+                return readFieldDocs(in);
+            }
+            else
+            {
+                return readScoreDocs(in);
+            }
+        }
+        else
+        {
+            return readScoreDocs(in);
+        }
+    }
+    
+    public static ScoreDoc[] readScoreDocs(StreamInput in) throws IOException
+    {
+        ScoreDoc[] scoreDocs = new ScoreDoc[in.readVInt()];
+        for (int i = 0; i < scoreDocs.length; i++) {
+            scoreDocs[i] = new ScoreDoc(in.readVInt(), in.readFloat());
+        }
+        return scoreDocs;
+    }
+    
+    public static FieldDoc[] readFieldDocs(StreamInput in) throws IOException
+    {
+        FieldDoc[] fieldDocs = new FieldDoc[in.readVInt()];
+        for (int i = 0; i < fieldDocs.length; i++) {
+            Comparable[] cFields = readValues(in);
+            fieldDocs[i] = new FieldDoc(in.readVInt(), in.readFloat(), cFields);
+        }
+        return fieldDocs;
+    }
+    
+    public static Comparable[] readValues(StreamInput in) throws IOException
+    {
+        if(!in.readBoolean())
+        {
+            return null;
+        }
+        
+        Comparable[] cFields = new Comparable[in.readVInt()];
+        for (int j = 0; j < cFields.length; j++) {
+            byte type = in.readByte();
+            if (type == 0) {
+                cFields[j] = null;
+            } else if (type == 1) {
+                cFields[j] = in.readString();
+            } else if (type == 2) {
+                cFields[j] = in.readInt();
+            } else if (type == 3) {
+                cFields[j] = in.readLong();
+            } else if (type == 4) {
+                cFields[j] = in.readFloat();
+            } else if (type == 5) {
+                cFields[j] = in.readDouble();
+            } else if (type == 6) {
+                cFields[j] = in.readByte();
+            } else if (type == 7) {
+                cFields[j] = in.readShort();
+            } else if (type == 8) {
+                cFields[j] = in.readBoolean();
+            } else if (type == 9) {
+                cFields[j] = in.readBytesRef();
+            } else {
+                throw new IOException("Can't match type [" + type + "]");
+            }
+        }
+        return cFields;
+    }
 
     public static TopDocs readTopDocs(StreamInput in) throws IOException {
         if (!in.readBoolean()) {
@@ -143,61 +222,187 @@ public class Lucene {
             int totalHits = in.readVInt();
             float maxScore = in.readFloat();
 
-            SortField[] fields = new SortField[in.readVInt()];
-            for (int i = 0; i < fields.length; i++) {
-                String field = null;
-                if (in.readBoolean()) {
-                    field = in.readString();
-                }
-                fields[i] = new SortField(field, readSortType(in), in.readBoolean());
-            }
+            SortField[] fields = readSortFields(in);
 
-            FieldDoc[] fieldDocs = new FieldDoc[in.readVInt()];
-            for (int i = 0; i < fieldDocs.length; i++) {
-                Comparable[] cFields = new Comparable[in.readVInt()];
-                for (int j = 0; j < cFields.length; j++) {
-                    byte type = in.readByte();
-                    if (type == 0) {
-                        cFields[j] = null;
-                    } else if (type == 1) {
-                        cFields[j] = in.readString();
-                    } else if (type == 2) {
-                        cFields[j] = in.readInt();
-                    } else if (type == 3) {
-                        cFields[j] = in.readLong();
-                    } else if (type == 4) {
-                        cFields[j] = in.readFloat();
-                    } else if (type == 5) {
-                        cFields[j] = in.readDouble();
-                    } else if (type == 6) {
-                        cFields[j] = in.readByte();
-                    } else if (type == 7) {
-                        cFields[j] = in.readShort();
-                    } else if (type == 8) {
-                        cFields[j] = in.readBoolean();
-                    } else if (type == 9) {
-                        cFields[j] = in.readBytesRef();
-                    } else {
-                        throw new IOException("Can't match type [" + type + "]");
-                    }
-                }
-                fieldDocs[i] = new FieldDoc(in.readVInt(), in.readFloat(), cFields);
-            }
+            FieldDoc[] fieldDocs=readFieldDocs(in);
             return new TopFieldDocs(totalHits, fieldDocs, fields, maxScore);
         } else {
             int totalHits = in.readVInt();
             float maxScore = in.readFloat();
 
-            ScoreDoc[] scoreDocs = new ScoreDoc[in.readVInt()];
-            for (int i = 0; i < scoreDocs.length; i++) {
-                scoreDocs[i] = new ScoreDoc(in.readVInt(), in.readFloat());
-            }
+            ScoreDoc[] scoreDocs = readScoreDocs(in);
             return new TopDocs(totalHits, scoreDocs, maxScore);
         }
     }
+    
+    public static SortField[] readSortFields(StreamInput in) throws IOException {
+        SortField[] fields = new SortField[in.readVInt()];
+        for (int i = 0; i < fields.length; i++) {
+            String field = null;
+            if (in.readBoolean()) {
+                field = in.readString();
+            }
+            fields[i] = new SortField(field, readSortType(in), in.readBoolean());
+        }
+        return fields;
+    }
+    
+    public static <GROUP_VALUE_TYPE> TopGroups<GROUP_VALUE_TYPE> readTopGroups(StreamInput in) throws IOException {
+        if (!in.readBoolean()) {
+            // no docs
+            return null;
+        }
+        
+        int totalHitCount=in.readVInt();
+        int totalGroupedHitCount=in.readVInt();
+        Integer totalGroupCount=null;
+        if(in.readBoolean())
+        {
+            totalGroupCount=new Integer(in.readVInt());
+        }
+        
+        int groupsLength=in.readVInt();
+        GroupDocs<GROUP_VALUE_TYPE>[] groups=new GroupDocs[groupsLength];
+        GROUP_VALUE_TYPE groupValue;
+        float groupMaxScore,score,maxScore;
+        ScoreDoc[] scoreDocs;
+        int totalHits;
+        Object[] groupSortValues;
+        SortField[] groupSort,withinGroupSort;
+        for(int ii=0;ii<groupsLength;ii++)
+        {
+            if(in.readBoolean())
+            {
+                groupValue=(GROUP_VALUE_TYPE)in.readGenericValue();
+            }
+            else
+            {
+                groupValue=null;
+            }
+            groupMaxScore=in.readFloat();
+            score=in.readFloat();
+            
+            scoreDocs=readScoreDocs(in,true);
+            totalHits=in.readVInt();
+            groupSortValues=readValues(in);
+            groups[ii]=new GroupDocs<GROUP_VALUE_TYPE>(score,groupMaxScore,totalHits,scoreDocs,groupValue,groupSortValues);
+        }
+        groupSort=readSortFields(in);
+        withinGroupSort=readSortFields(in);
+        maxScore=in.readFloat();
+        
+        //Workaround since TopGroups doens't expose a constructor that let's us set totalGroupCount
+        TopGroups<GROUP_VALUE_TYPE> topGroupsTemp=new TopGroups<GROUP_VALUE_TYPE>(groupSort,withinGroupSort,totalHitCount,totalGroupedHitCount,groups,maxScore);
+        TopGroups<GROUP_VALUE_TYPE> topGroups=new TopGroups<GROUP_VALUE_TYPE>(topGroupsTemp,totalGroupCount);
+        return topGroups;
+    }
 
+    public static void writeScoreDocs(StreamOutput out, ScoreDoc[] scoreDocs, int from, boolean check4Fields) throws IOException
+    {
+        if(check4Fields)
+        {
+            if(scoreDocs.length-from>0)
+            {
+                if(scoreDocs[from] instanceof FieldDoc)
+                {
+                    out.writeBoolean(true);
+                    writeFieldDocs(out,scoreDocs,from);
+                }
+                else
+                {
+                    out.writeBoolean(false);
+                    writeScoreDocs(out,scoreDocs,from);
+                }
+            }
+            else
+            {
+                out.writeVInt(0);
+            }
+        }
+        else
+        {
+            writeScoreDocs(out,scoreDocs,from);
+        }
+    }
+    
+    public static void writeScoreDocs(StreamOutput out, ScoreDoc[] scoreDocs, int from) throws IOException {
+        out.writeVInt(scoreDocs.length - from);
+        int index = 0;
+        for (ScoreDoc doc : scoreDocs) {
+            if (index++ < from) {
+                continue;
+            }
+            out.writeVInt(doc.doc);
+            out.writeFloat(doc.score);
+        }
+    }
+    
+    public static void writeFieldDocs(StreamOutput out, ScoreDoc[] scoreDocs, int from) throws IOException {
+        out.writeVInt(scoreDocs.length - from);
+        int index = 0;
+        for (ScoreDoc doc : scoreDocs) {
+            if (index++ < from) {
+                continue;
+            }
+            FieldDoc fieldDoc = (FieldDoc) doc;
+            writeValues(out,fieldDoc.fields);
+
+            out.writeVInt(doc.doc);
+            out.writeFloat(doc.score);
+        }
+    }
+    
+    public static void writeValues(StreamOutput out, Object[] fields) throws IOException
+    {
+        if(fields==null)
+        {
+            out.writeBoolean(false);
+            return;
+        }
+        
+        out.writeBoolean(true);
+        out.writeVInt(fields.length);
+        for (Object field : fields) {
+            if (field == null) {
+                out.writeByte((byte) 0);
+            } else {
+                Class type = field.getClass();
+                if (type == String.class) {
+                    out.writeByte((byte) 1);
+                    out.writeString((String) field);
+                } else if (type == Integer.class) {
+                    out.writeByte((byte) 2);
+                    out.writeInt((Integer) field);
+                } else if (type == Long.class) {
+                    out.writeByte((byte) 3);
+                    out.writeLong((Long) field);
+                } else if (type == Float.class) {
+                    out.writeByte((byte) 4);
+                    out.writeFloat((Float) field);
+                } else if (type == Double.class) {
+                    out.writeByte((byte) 5);
+                    out.writeDouble((Double) field);
+                } else if (type == Byte.class) {
+                    out.writeByte((byte) 6);
+                    out.writeByte((Byte) field);
+                } else if (type == Short.class) {
+                    out.writeByte((byte) 7);
+                    out.writeShort((Short) field);
+                } else if (type == Boolean.class) {
+                    out.writeByte((byte) 8);
+                    out.writeBoolean((Boolean) field);
+                } else if (type == BytesRef.class) {
+                    out.writeByte((byte) 9);
+                    out.writeBytesRef((BytesRef) field);
+                } else {
+                    throw new IOException("Can't handle sort field value of type [" + type + "]");
+                }
+            }
+        }
+    }
+    
     public static void writeTopDocs(StreamOutput out, TopDocs topDocs, int from) throws IOException {
-        if (topDocs.scoreDocs.length - from < 0) {
+        if (topDocs==null || topDocs.scoreDocs.length - from < 0) {
             out.writeBoolean(false);
             return;
         }
@@ -209,86 +414,75 @@ public class Lucene {
             out.writeVInt(topDocs.totalHits);
             out.writeFloat(topDocs.getMaxScore());
 
-            out.writeVInt(topFieldDocs.fields.length);
-            for (SortField sortField : topFieldDocs.fields) {
-                if (sortField.getField() == null) {
-                    out.writeBoolean(false);
-                } else {
-                    out.writeBoolean(true);
-                    out.writeString(sortField.getField());
-                }
-                if (sortField.getComparatorSource() != null) {
-                    writeSortType(out, ((IndexFieldData.XFieldComparatorSource) sortField.getComparatorSource()).reducedType());
-                } else {
-                    writeSortType(out, sortField.getType());
-                }
-                out.writeBoolean(sortField.getReverse());
-            }
+            writeSortFields(out,topFieldDocs.fields);
 
-            out.writeVInt(topDocs.scoreDocs.length - from);
-            int index = 0;
-            for (ScoreDoc doc : topFieldDocs.scoreDocs) {
-                if (index++ < from) {
-                    continue;
-                }
-                FieldDoc fieldDoc = (FieldDoc) doc;
-                out.writeVInt(fieldDoc.fields.length);
-                for (Object field : fieldDoc.fields) {
-                    if (field == null) {
-                        out.writeByte((byte) 0);
-                    } else {
-                        Class type = field.getClass();
-                        if (type == String.class) {
-                            out.writeByte((byte) 1);
-                            out.writeString((String) field);
-                        } else if (type == Integer.class) {
-                            out.writeByte((byte) 2);
-                            out.writeInt((Integer) field);
-                        } else if (type == Long.class) {
-                            out.writeByte((byte) 3);
-                            out.writeLong((Long) field);
-                        } else if (type == Float.class) {
-                            out.writeByte((byte) 4);
-                            out.writeFloat((Float) field);
-                        } else if (type == Double.class) {
-                            out.writeByte((byte) 5);
-                            out.writeDouble((Double) field);
-                        } else if (type == Byte.class) {
-                            out.writeByte((byte) 6);
-                            out.writeByte((Byte) field);
-                        } else if (type == Short.class) {
-                            out.writeByte((byte) 7);
-                            out.writeShort((Short) field);
-                        } else if (type == Boolean.class) {
-                            out.writeByte((byte) 8);
-                            out.writeBoolean((Boolean) field);
-                        } else if (type == BytesRef.class) {
-                            out.writeByte((byte) 9);
-                            out.writeBytesRef((BytesRef) field);
-                        } else {
-                            throw new IOException("Can't handle sort field value of type [" + type + "]");
-                        }
-                    }
-                }
-
-                out.writeVInt(doc.doc);
-                out.writeFloat(doc.score);
-            }
+            writeFieldDocs(out,topDocs.scoreDocs,from);
         } else {
             out.writeBoolean(false);
             out.writeVInt(topDocs.totalHits);
             out.writeFloat(topDocs.getMaxScore());
 
-            out.writeVInt(topDocs.scoreDocs.length - from);
-            int index = 0;
-            for (ScoreDoc doc : topDocs.scoreDocs) {
-                if (index++ < from) {
-                    continue;
-                }
-                out.writeVInt(doc.doc);
-                out.writeFloat(doc.score);
-            }
+           writeScoreDocs(out,topDocs.scoreDocs,from);
         }
+    }
+    
+    public static void writeSortFields(StreamOutput out, SortField[] sortFields) throws IOException
+    {
+        out.writeVInt(sortFields.length);
+        for (SortField sortField : sortFields) {
+            if (sortField.getField() == null) {
+                out.writeBoolean(false);
+            } else {
+                out.writeBoolean(true);
+                out.writeString(sortField.getField());
+            }
+            if (sortField.getComparatorSource() != null) {
+                writeSortType(out, ((IndexFieldData.XFieldComparatorSource) sortField.getComparatorSource()).reducedType());
+            } else {
+                writeSortType(out, sortField.getType());
+            }
+            out.writeBoolean(sortField.getReverse());
+        }
+    }
+    
+    public static void writeTopGroups(StreamOutput out, TopGroups topGroups, int fromGroup, int from) throws IOException {
+        if (topGroups==null || topGroups.groups.length - fromGroup < 0) {
+            out.writeBoolean(false);
+            return;
+        }
+        out.writeBoolean(true);
+        out.writeVInt(topGroups.totalHitCount);
+        out.writeVInt(topGroups.totalGroupedHitCount);
+        boolean totalGroupCount=topGroups.totalGroupCount!=null;
+        out.writeBoolean(totalGroupCount);
+        if(totalGroupCount)
+        {
+            out.writeVInt(topGroups.totalGroupCount.intValue());
+        }
+        
+        out.writeVInt(topGroups.groups.length);
+        boolean groupValue=true;
+        for(GroupDocs groupDocs:topGroups.groups)
+        {
+            groupValue=groupDocs.groupValue!=null;
+            out.writeBoolean(groupValue);
+            if(groupValue)
+            {
+                out.writeGenericValue(groupDocs.groupValue);
+            }
+            
+            out.writeFloat(groupDocs.maxScore);
+            out.writeFloat(groupDocs.score);
+            
+            writeScoreDocs(out,groupDocs.scoreDocs,from,true);
+            out.writeVInt(groupDocs.totalHits);
+
+            writeValues(out,groupDocs.groupSortValues);
+        }
+        
+        writeSortFields(out,topGroups.groupSort);
+        writeSortFields(out,topGroups.withinGroupSort);
+        out.writeFloat(topGroups.maxScore);
     }
 
     // LUCENE 4 UPGRADE: We might want to maintain our own ordinal, instead of Lucene's ordinal

@@ -30,10 +30,13 @@ import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.client.Client;
 import org.elasticsearch.client.Requests;
 import org.elasticsearch.common.xcontent.XContentBuilder;
+import org.elasticsearch.common.xcontent.XContentFactory;
+import org.elasticsearch.common.xcontent.XContentType;
 import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.index.query.functionscore.script.ScriptScoreFunctionBuilder;
 import org.elasticsearch.search.Scroll;
 import org.elasticsearch.search.SearchHit;
+import org.elasticsearch.search.SearchHits;
 import org.elasticsearch.search.builder.SearchSourceBuilder;
 import org.elasticsearch.search.facet.FacetBuilders;
 import org.elasticsearch.search.facet.query.QueryFacet;
@@ -42,6 +45,7 @@ import org.elasticsearch.test.integration.AbstractSharedClusterTest;
 import org.junit.Test;
 
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.Set;
 
 import static org.elasticsearch.action.search.SearchType.*;
@@ -77,26 +81,68 @@ public class TransportTwoNodesSearchTests extends AbstractSharedClusterTest {
         client().admin().indices().refresh(refreshRequest("test")).actionGet();
         return fullExpectedIds;
     }
-
+    
     private void index(Client client, String id, String nameValue, int age) throws IOException {
-        client().index(Requests.indexRequest("test").type("type1").id(id).source(source(id, nameValue, age))).actionGet();
+        XContentBuilder builder=source(id, nameValue, age);
+        logger.info("Indexing: {}", builder.string());
+        client().index(Requests.indexRequest("test").type("type1").id(id).source(builder)).actionGet();
     }
-
+    
     private XContentBuilder source(String id, String nameValue, int age) throws IOException {
         StringBuilder multi = new StringBuilder().append(nameValue);
         for (int i = 0; i < age; i++) {
             multi.append(" ").append(nameValue);
         }
+        String group="G"+Integer.toString(Integer.parseInt(id)%10);
         return jsonBuilder().startObject()
                 .field("id", id)
                 .field("nid", Integer.parseInt(id))
                 .field("name", nameValue + id)
                 .field("age", age)
                 .field("multi", multi.toString())
+                .field("group",group)
                 .field("_boost", age * 10)
                 .endObject();
     }
+    
+    private Set<String> prepareGroupData() throws Exception {
+        Set<String> fullExpectedIds = Sets.newHashSet();
+        cluster().ensureAtLeastNumNodes(2);
+        client().admin().indices().create(createIndexRequest("grouptest")
+                .settings(settingsBuilder().put("index.number_of_shards", 3)
+                        .put("index.number_of_replicas", 0)
+                        .put("routing.hash.type", "simple")))
+                .actionGet();
 
+        ensureGreen();
+        for (int i = 0; i < 100; i++) {
+//            index(client(), Integer.toString(i), "grouptest", i);
+            XContentBuilder builder=groupSource(Integer.toString(i), "groupme", i);
+            logger.info("Indexing: {}", builder.string());
+            client().index(Requests.indexRequest("grouptest").type("type1").id(Integer.toString(i)).source(builder)).actionGet();
+            fullExpectedIds.add(Integer.toString(i));
+        }
+        client().admin().indices().refresh(refreshRequest("grouptest")).actionGet();
+        return fullExpectedIds;
+    }
+    
+    private XContentBuilder groupSource(String id, String nameValue, int age) throws IOException {
+        StringBuilder multi = new StringBuilder().append(nameValue);
+        for (int i = 0; i < age; i++) {
+            multi.append(" ").append(nameValue);
+        }
+        int mod=Integer.parseInt(id)%10;
+        String group="G"+Integer.toString(mod);
+        return jsonBuilder().startObject()
+                .field("id", id)
+                .field("nid", Integer.parseInt(id)-mod)
+                .field("name", nameValue + id)
+                .field("age", age)
+                .field("multi", multi.toString())
+                .field("category",group)
+                .endObject();
+    }
+    
     @Test
     public void testDfsQueryThenFetch() throws Exception {
         prepareData();
@@ -242,6 +288,99 @@ public class TransportTwoNodesSearchTests extends AbstractSharedClusterTest {
         for (int i = 0; i < 40; i++) {
             SearchHit hit = searchResponse.getHits().hits()[i];
             assertThat("id[" + hit.id() + "]", hit.id(), equalTo(Integer.toString(i + 60)));
+        }
+    }
+    
+    @Test
+    public void testQueryThenFetchWithGroupBy() throws Exception {
+        prepareGroupData();
+
+        //keyword query, group by text field, sorts defaulted
+        SearchSourceBuilder source = searchSource()
+                .query(termQuery("multi", "groupme"))
+                .from(0).size(5).groupBy("category").groupSize(3).field("category");
+
+        XContentBuilder builder = XContentBuilder.builder(XContentFactory.xContent(XContentType.JSON)).prettyPrint();
+        source.toXContent(builder, null);
+        logger.info("SearchRequest:\n{}", builder.string());
+        
+        SearchResponse searchResponse = client().search(searchRequest("grouptest").source(source).searchType(QUERY_THEN_FETCH)).actionGet();
+        
+        builder = XContentBuilder.builder(XContentFactory.xContent(XContentType.JSON)).prettyPrint().startObject();
+        searchResponse.toXContent(builder, null);
+        logger.info("SearchResponse:\n{}", builder.string());
+        
+        assertNoFailures(searchResponse);
+        assertThat(searchResponse.getHits().totalHits(), equalTo(100l));//same as without grouping
+        assertThat(searchResponse.getHits().hits().length, equalTo(15));
+        assertGroups(searchResponse.getHits(),"category",5,3);
+        
+       //text query, group by text field, sort groups by numeric field, sort hits by numeric field
+        source = searchSource()
+                .query(termQuery("multi", "groupme"))
+                .from(0).size(5).groupBy("category").groupSize(3).fields("category","nid","age","id").sort("age").groupSort("id");
+
+        builder = XContentBuilder.builder(XContentFactory.xContent(XContentType.JSON)).prettyPrint();
+        source.toXContent(builder, null);
+        logger.info("SearchRequest:\n{}", builder.string());
+        
+        searchResponse = client().search(searchRequest("grouptest").source(source).searchType(QUERY_THEN_FETCH)).actionGet();
+        
+        builder = XContentBuilder.builder(XContentFactory.xContent(XContentType.JSON)).prettyPrint().startObject();
+        searchResponse.toXContent(builder, null);
+        logger.info("SearchResponse:\n{}", builder.string());
+        
+        assertNoFailures(searchResponse);
+        assertThat(searchResponse.getHits().totalHits(), equalTo(100l));//same as without grouping
+        assertThat(searchResponse.getHits().hits().length, equalTo(15));
+        assertGroups(searchResponse.getHits(),"category",5,3);
+        
+      //text query, group by text field, sort groups by numeric field, sort hits by numeric field
+        source = searchSource()
+                .query(termQuery("multi", "groupme"))
+                .from(0).size(2).groupBy("category").groupSize(1).fields("category","nid","age","id").sort("age").groupSort("id");
+
+        builder = XContentBuilder.builder(XContentFactory.xContent(XContentType.JSON)).prettyPrint();
+        source.toXContent(builder, null);
+        logger.info("SearchRequest:\n{}", builder.string());
+        
+        searchResponse = client().search(searchRequest("grouptest").source(source).searchType(QUERY_THEN_FETCH)).actionGet();
+        
+        builder = XContentBuilder.builder(XContentFactory.xContent(XContentType.JSON)).prettyPrint().startObject();
+        searchResponse.toXContent(builder, null);
+        logger.info("SearchResponse:\n{}", builder.string());
+        
+        assertNoFailures(searchResponse);
+        assertThat(searchResponse.getHits().totalHits(), equalTo(100l));//same as without grouping
+        assertThat(searchResponse.getHits().hits().length, equalTo(2));
+        assertGroups(searchResponse.getHits(),"category",2,1);
+    }
+    
+    private void assertGroups(SearchHits hits, String groupField, int groups, int groupSize)
+    {
+        int[] sizes = new int[groups];
+        Arrays.fill(sizes, groupSize);
+        assertGroups(hits,groupField,sizes);
+    }
+    
+    private void assertGroups(SearchHits hits, String groupField, int[] sizes)
+    {
+        int group=0, size=1;
+        Object group1=null, group2=null;
+        for(int ii=0;ii<hits.getHits().length;ii++)
+        {
+            group1=group2;
+            group2=hits.getHits()[ii].field(groupField).getValue();
+            if(group1==group2 || group2.equals(group1))
+            {
+                size++;
+            }
+            else if (ii!=0)
+            {
+                assertThat(size,equalTo(sizes[group]));
+                group++;                    
+                size=1;
+            }
         }
     }
 

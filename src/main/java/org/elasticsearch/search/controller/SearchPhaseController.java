@@ -22,6 +22,9 @@ package org.elasticsearch.search.controller;
 import com.google.common.collect.Lists;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.search.*;
+import org.apache.lucene.search.grouping.GroupDocs;
+import org.apache.lucene.util.BytesRef;
+import org.apache.lucene.util.CollectionUtil;
 import org.apache.lucene.util.PriorityQueue;
 import org.elasticsearch.cache.recycler.CacheRecycler;
 import org.elasticsearch.common.collect.XMaps;
@@ -44,6 +47,7 @@ import org.elasticsearch.search.query.QuerySearchResult;
 import org.elasticsearch.search.query.QuerySearchResultProvider;
 import org.elasticsearch.search.suggest.Suggest;
 
+import java.io.IOException;
 import java.util.*;
 
 /**
@@ -125,12 +129,215 @@ public class SearchPhaseController extends AbstractComponent {
         return Math.min(left, right) == -1 ? -1 : left + right;
     }
 
-    public ScoreDoc[] sortDocs(AtomicArray<? extends QuerySearchResultProvider> resultsArr) {
-        List<? extends AtomicArray.Entry<? extends QuerySearchResultProvider>> results = resultsArr.asList();
+    private static class GroupDocsFieldComparator implements Comparator<GroupDocs>
+    {
+        private final FieldComparator<?>[] comparators;
+        private final int[] reverseMul;
+        
+        public GroupDocsFieldComparator(SortField[] sortFields) throws IOException
+        {
+            comparators = new FieldComparator[sortFields.length];
+            reverseMul = new int[sortFields.length];
+            for(int compIDX=0;compIDX<sortFields.length;compIDX++) {
+                final SortField sortField = sortFields[compIDX];
+                comparators[compIDX] = sortField.getComparator(1, compIDX);
+                reverseMul[compIDX] = sortField.getReverse() ? -1 : 1;
+              }
+        }
+
+        @Override
+        public int compare(GroupDocs first, GroupDocs second) {
+            assert first != second;
+            final FieldDoc firstFD = (FieldDoc) first.scoreDocs[0];
+            final FieldDoc secondFD = (FieldDoc) second.scoreDocs[0];
+            //System.out.println("  lessThan:\n     first=" + first + " doc=" + firstFD.doc + " score=" + firstFD.score + "\n    second=" + second + " doc=" + secondFD.doc + " score=" + secondFD.score);
+
+            for(int compIDX=0;compIDX<comparators.length;compIDX++) {
+              final FieldComparator comp = comparators[compIDX];
+              //System.out.println("    cmp idx=" + compIDX + " cmp1=" + firstFD.fields[compIDX] + " cmp2=" + secondFD.fields[compIDX] + " reverse=" + reverseMul[compIDX]);
+
+              final int cmp = reverseMul[compIDX] * comp.compareValues(firstFD.fields[compIDX], secondFD.fields[compIDX]);
+              
+              if (cmp != 0) {
+                return cmp;
+              }
+            }
+            
+            //ignore tie breaker
+            return 0;
+        }
+        
+    }
+    
+    private static class FieldDocsComparator implements Comparator<FieldDoc>
+    {
+        private final FieldComparator<?>[] comparators;
+        private final int[] reverseMul;
+        
+        public FieldDocsComparator(SortField[] sortFields) throws IOException
+        {
+            comparators = new FieldComparator[sortFields.length];
+            reverseMul = new int[sortFields.length];
+            for(int compIDX=0;compIDX<sortFields.length;compIDX++) {
+                final SortField sortField = sortFields[compIDX];
+                comparators[compIDX] = sortField.getComparator(1, compIDX);
+                reverseMul[compIDX] = sortField.getReverse() ? -1 : 1;
+              }
+        }
+        
+        @Override
+        public int compare(final FieldDoc firstFD, final FieldDoc secondFD) {
+            assert firstFD != secondFD;
+            for(int compIDX=0;compIDX<comparators.length;compIDX++) {
+              final FieldComparator comp = comparators[compIDX];
+              //System.out.println("    cmp idx=" + compIDX + " cmp1=" + firstFD.fields[compIDX] + " cmp2=" + secondFD.fields[compIDX] + " reverse=" + reverseMul[compIDX]);
+
+              final int cmp = reverseMul[compIDX] * comp.compareValues(firstFD.fields[compIDX], secondFD.fields[compIDX]);
+              
+              if (cmp != 0) {
+                return cmp;
+              }
+            }
+            
+            //ignore tie breaker
+            return 0;
+        }
+    }
+    
+    /**
+     * 
+     * @param results
+     * @param size              Number of groups to return
+     * @param groupSize         Number of hits per group
+     * @param from              Index from which to start returning groups
+     * @param assignShardIndex  to assing ScoreDoc.shardIndex for returned hits
+     * @return
+     * @throws IOException
+     */
+    public GroupDocs[] sortGroupedDocs(List<? extends AtomicArray.Entry<? extends QuerySearchResultProvider>> results, int size, int groupSize, int from, boolean assignShardIndex) throws IOException
+    {
+        //TODO implement single shard optimization
+        
+        Comparator<FieldDoc> groupComparator=new FieldDocsComparator(results.get(0).value.queryResult().topGroups().groupSort);
+        Comparator<FieldDoc> fieldComparator=new FieldDocsComparator(results.get(0).value.queryResult().topGroups().withinGroupSort);
+        
+        //jsut for debug, DELETE ME!
+        logger.info("Hits Phase - Mergins Groups");
+        
+        HashMap<Object,GroupDocs> groupMap=new HashMap<Object,GroupDocs>();
+        GroupDocs bucketGroup=null;
+        for(AtomicArray.Entry<? extends QuerySearchResultProvider> entry: results)
+        {
+            logger.info("Shard {} results", entry.index);
+            for(GroupDocs group:entry.value.queryResult().topGroups().groups)
+            {
+                logger.info("Group '{}': scoreDocs{}, in map={}", ((BytesRef)group.groupValue).utf8ToString(), group.scoreDocs,bucketGroup!=null);
+                bucketGroup=groupMap.get(group.groupValue);
+                if(bucketGroup!=null)
+                {
+                    //check this max vs.their min
+                    if(groupComparator.compare((FieldDoc)group.scoreDocs[0], (FieldDoc)bucketGroup.scoreDocs[bucketGroup.scoreDocs.length-1])>0)
+                    {
+                        //TODO use reference struct to avoid second hash
+                        if(assignShardIndex)
+                        {
+                            for(ScoreDoc doc:group.scoreDocs)
+                            {
+                                doc.shardIndex=entry.index;
+                            }
+                        }
+                        bucketGroup=merge(bucketGroup,group,groupSize,fieldComparator);
+                        logger.info("Merged Group '{}': scoreDocs={}", ((BytesRef)bucketGroup.groupValue).utf8ToString(), bucketGroup.scoreDocs);
+                        groupMap.put(bucketGroup.groupValue, bucketGroup);
+                    }
+                }
+                else
+                {
+                    if(assignShardIndex)
+                    {
+                        for(ScoreDoc doc:group.scoreDocs)
+                        {
+                            doc.shardIndex=entry.index;
+                        }
+                    }
+                    groupMap.put(group.groupValue, group);
+                }
+            }
+        }
+        
+        if(groupMap.size()<from+1)
+        {
+            return new GroupDocs[0];
+        }
+        else
+        {
+            int realSize=Math.min(size, groupMap.size()-from);
+            ArrayList<GroupDocs> groupList=new ArrayList<GroupDocs>(groupMap.values());
+            CollectionUtil.timSort(groupList, new GroupDocsFieldComparator(results.get(0).value.queryResult().topGroups().groupSort));
+            return groupList.subList(from, from+realSize).toArray(new GroupDocs[realSize]);
+        }
+    }
+    
+    public <GROUP_VALUE_TYPE> GroupDocs<GROUP_VALUE_TYPE> merge(GroupDocs<GROUP_VALUE_TYPE> group1, GroupDocs<GROUP_VALUE_TYPE> group2, int topN, Comparator<FieldDoc> fieldComparator)
+    {
+        logger.info("Merge groups: left={}, right={}, topN={}",  group1.scoreDocs, group2.scoreDocs, topN);
+        topN=Math.min(topN, group1.scoreDocs.length+group2.scoreDocs.length);
+        logger.info("Real topN={}", topN);
+        ScoreDoc[] merged=new ScoreDoc[topN];
+        
+        float maxScore=Float.MIN_VALUE;
+        int i1=0,i2=0,mi=0,comp;
+        FieldDoc doc1=null,doc2=null;
+        
+        while(mi<topN)
+        {
+            doc1=i1<group1.scoreDocs.length?(FieldDoc)group1.scoreDocs[i1]:null;
+            doc2=i2<group2.scoreDocs.length?(FieldDoc)group2.scoreDocs[i2]:null;
+            
+            if(doc1==null||doc2==null)
+            {
+                if(doc1==null)
+                {
+                    merged[mi]=group2.scoreDocs[i2];
+                    i2++;
+                }
+                else
+                {
+                    merged[mi]=group1.scoreDocs[i1];
+                    i1++;
+                }
+            }
+            else
+            {
+                comp=fieldComparator.compare(doc1,doc2);
+                if(comp>=0)
+                {
+                    merged[mi]=group1.scoreDocs[i1];
+                    i1++;
+                }
+                else
+                {
+                    merged[mi]=group2.scoreDocs[i2];
+                    i2++;
+                }
+            }
+            maxScore=Math.max(maxScore, merged[mi].score);
+            mi++;
+        }
+        
+        return new GroupDocs<GROUP_VALUE_TYPE>(Float.NaN,maxScore,group1.totalHits+group2.totalHits,merged,group1.groupValue,group1.groupSortValues);
+    }
+    
+    public ScoreDoc[] sortDocs(AtomicArray<? extends QuerySearchResultProvider> resultsArr)
+    {
+        return sortDocs(resultsArr.asList());
+    }
+    
+    public ScoreDoc[] sortDocs(List<? extends AtomicArray.Entry<? extends QuerySearchResultProvider>> results) {
         if (results.isEmpty()) {
             return EMPTY_DOCS;
         }
-
+        
         if (optimizeSingleShard) {
             boolean canOptimize = false;
             QuerySearchResult result = null;
@@ -354,9 +561,10 @@ public class SearchPhaseController extends AbstractComponent {
             if (result.searchTimedOut()) {
                 timedOut = true;
             }
-            totalHits += result.topDocs().totalHits;
-            if (!Float.isNaN(result.topDocs().getMaxScore())) {
-                maxScore = Math.max(maxScore, result.topDocs().getMaxScore());
+            totalHits += result.topDocs()!=null ? result.topDocs().totalHits : result.topGroups().totalHitCount;
+            float resultMaxScore=result.topDocs()!=null ? result.topDocs().getMaxScore() : result.topGroups().maxScore;
+            if (!Float.isNaN(resultMaxScore)) {
+                maxScore = Math.max(maxScore, resultMaxScore);
             }
         }
         if (Float.isInfinite(maxScore)) {

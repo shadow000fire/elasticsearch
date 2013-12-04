@@ -433,6 +433,9 @@ public abstract class StreamInput extends InputStream {
                 return readText();
             case 16:
                 return readShort();
+            case 17:
+                int length=readVInt();
+                return readBytesRef(length);
             default:
                 throw new IOException("Can't read unknown type [" + type + "]");
         }

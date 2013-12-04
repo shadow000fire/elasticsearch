@@ -191,6 +191,10 @@ public abstract class SearchContext implements Releasable {
     public abstract SearchContext sort(Sort sort);
 
     public abstract Sort sort();
+    
+    public abstract SearchContext groupSort(Sort groupSort);
+
+    public abstract Sort groupSort();
 
     public abstract SearchContext trackScores(boolean trackScores);
 
@@ -228,13 +232,25 @@ public abstract class SearchContext implements Releasable {
     public abstract int size();
 
     public abstract SearchContext size(int size);
+    
+    public abstract int groupSize();
+    
+    public abstract SearchContext groupSize(int groupSize);
+    
+    public abstract int groupFrom();
+    
+    public abstract SearchContext groupFrom(int groupFrom);
 
     public abstract boolean hasFieldNames();
 
     public abstract List<String> fieldNames();
 
     public abstract void emptyFieldNames();
-
+    
+    public abstract String groupBy();
+    
+    public abstract void groupBy(String groupBy);
+    
     public abstract boolean explain();
 
     public abstract void explain(boolean explain);
